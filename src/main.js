@@ -1,16 +1,18 @@
 // src/main.js
-// Wires the layers together: MIDI -> appState -> theory -> keyboard + readout.
+// Wires the layers together: MIDI -> appState -> theory -> keyboard, readout, and audio.
 import './style.css';
 import { initMidi } from './midi/midiInput.js';
 import { appState } from './state/appState.js';
 import { detectChord } from './theory/chordDetect.js';
 import { createScaleTracker } from './theory/scaleDetect.js';
 import { createKeyboard } from './render/keyboard.js';
+import { createAudioEngine } from './audio/audioEngine.js';
 
 document.querySelector('#app').innerHTML = `
   <header class="topbar">
     <span class="app-name">Piano Trainer</span>
     <span id="status">Plug in your controller, then connect.</span>
+    <button id="sound" class="secondary" aria-pressed="true" disabled>Sound on</button>
     <button id="connect">Connect MIDI</button>
   </header>
   <main class="stage">
@@ -27,12 +29,35 @@ const $ = (sel) => document.querySelector(sel);
 const scaleTracker = createScaleTracker();
 const keyboard = createKeyboard($('#keyboard')); // for a 61-key board: { low: 36, high: 96 }
 
+const soundButton = $('#sound');
+const audio = createAudioEngine({
+  onStatus: (status) => {
+    soundButton.disabled = status !== 'ready';
+    soundButton.textContent =
+      status === 'loading' ? 'Loading piano...' : status === 'error' ? 'Sound unavailable' : 'Sound on';
+  },
+});
+soundButton.addEventListener('click', () => {
+  const muted = !audio.isMuted();
+  audio.setMuted(muted);
+  soundButton.textContent = muted ? 'Sound off' : 'Sound on';
+  soundButton.setAttribute('aria-pressed', String(!muted));
+});
+
+// Audio follows "sounding" (not "held") so the sustain pedal works:
+// a note stops only when it leaves the sounding list.
+let prevSounding = new Set();
+
 appState.subscribe((s) => {
   const e = s.lastEvent;
   if (e?.type === 'noteOn') {
     scaleTracker.addNote(e.note, e.time);
     keyboard.pulse(e.note, e.velocity);
+    audio.noteOn(e.note, e.velocity);
   }
+  const nowSounding = new Set(s.sounding);
+  for (const n of prevSounding) if (!nowSounding.has(n)) audio.noteOff(n);
+  prevSounding = nowSounding;
   if (e?.type === 'reset') scaleTracker.reset();
 
   const key = scaleTracker.detect();
@@ -71,6 +96,7 @@ appState.subscribe((s) => {
 
 $('#connect').addEventListener('click', async () => {
   const button = $('#connect');
+  audio.start(); // start audio inside the click, before any await, so the browser allows it
   try {
     await initMidi({
       onNoteOn: ({ note, velocity, time }) => appState.noteOn(note, velocity, time),

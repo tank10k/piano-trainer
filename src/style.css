@@ -67,3 +67,10 @@ button:disabled { background: var(--line); color: var(--muted); cursor: default;
 @media (prefers-reduced-motion: reduce) {
   .chord { transition: none; }
 }
+
+button.secondary {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--line);
+}
+button.secondary:disabled { background: transparent; }
