@@ -69,6 +69,7 @@ export function createScaleTracker({ maxNotes = 16, windowMs = 10000 } = {}) {
         mode: scale.mode,
         name: `${(isMajor ? MAJOR_NAMES : MINOR_NAMES)[tonic]} ${scale.mode}`,
         preferFlats,
+        scalePcs: scale.steps.map((s) => pitchClass(tonic + s)), // for the keyboard's scale dots
         scaleNotes: scale.steps.map((s, i) => spell(pitchClass(tonic + s), i)),
         outside: outside.map((pc) => pcName(pc, preferFlats)),
         fit,

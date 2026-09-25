@@ -1,75 +1,76 @@
 // src/main.js
-// Stage 3 test harness: MIDI -> appState -> theory engine -> text on screen.
+// Wires the layers together: MIDI -> appState -> theory -> keyboard + readout.
 import './style.css';
 import { initMidi } from './midi/midiInput.js';
 import { appState } from './state/appState.js';
-import { noteName } from './theory/noteUtils.js';
 import { detectChord } from './theory/chordDetect.js';
 import { createScaleTracker } from './theory/scaleDetect.js';
+import { createKeyboard } from './render/keyboard.js';
 
 document.querySelector('#app').innerHTML = `
-  <h1>Piano Trainer</h1>
-  <p id="status">Plug in your controller, then connect.</p>
-  <button id="connect">Connect MIDI</button>
-  <h2 id="chord">Play a chord</h2>
-  <p id="chord-detail"></p>
-  <p id="key">Key: play a few notes</p>
-  <p id="held">Holding: nothing</p>
-  <pre id="log" style="text-align:left; min-height:8em;"></pre>
+  <header class="topbar">
+    <span class="app-name">Piano Trainer</span>
+    <span id="status">Plug in your controller, then connect.</span>
+    <button id="connect">Connect MIDI</button>
+  </header>
+  <main class="stage">
+    <section class="readout" aria-live="polite">
+      <div id="chord" class="chord"></div>
+      <div id="chord-detail" class="chord-detail">Play a chord to see its name</div>
+      <div id="key" class="key">Play a few notes and the key will appear here</div>
+    </section>
+    <canvas id="keyboard" aria-label="Keyboard showing the notes you play"></canvas>
+  </main>
 `;
 
 const $ = (sel) => document.querySelector(sel);
 const scaleTracker = createScaleTracker();
-const lines = [];
-
-function log(message) {
-  console.log(message);
-  lines.unshift(message);
-  lines.length = Math.min(lines.length, 12);
-  $('#log').textContent = lines.join('\n');
-}
+const keyboard = createKeyboard($('#keyboard')); // for a 61-key board: { low: 36, high: 96 }
 
 appState.subscribe((s) => {
   const e = s.lastEvent;
-  if (e?.type === 'noteOn') scaleTracker.addNote(e.note, e.time);
+  if (e?.type === 'noteOn') {
+    scaleTracker.addNote(e.note, e.time);
+    keyboard.pulse(e.note, e.velocity);
+  }
   if (e?.type === 'reset') scaleTracker.reset();
 
-  // Key first, so the chord can be spelled to match it (Bb in F major, not A#).
   const key = scaleTracker.detect();
-  const flats = key?.preferFlats ?? false;
-  const names = (list) => list.map((n) => noteName(n, flats)).join(' ') || 'nothing';
+  const preferFlats = key?.preferFlats ?? false;
+  const chord = detectChord(s.sounding, { preferFlats });
 
-  // Chord
-  const chord = detectChord(s.sounding, { preferFlats: flats });
-  if (!chord) {
-    $('#chord').textContent = 'Play a chord';
-    $('#chord-detail').textContent = '';
-  } else {
-    $('#chord').textContent = chord.symbol;
+  // Chord readout: keep the last chord visible (dimmed) after you let go.
+  const chordEl = $('#chord');
+  chordEl.classList.toggle('faded', !chord);
+  if (chord) {
+    chordEl.textContent = chord.symbol;
     const alts = chord.alternatives?.length
-      ? `. Could also be read as ${chord.alternatives.map((a) => a.symbol).join(', ')}`
+      ? `. Also reads as ${chord.alternatives.map((a) => a.symbol).join(', ')}`
       : '';
     $('#chord-detail').textContent =
       chord.type === 'chord' ? `${chord.name}, ${chord.inversion}${alts}` : chord.name;
   }
 
-  // Key
+  // Key readout: scale notes in the same amber as the dots on the keyboard.
   if (key) {
-    const outside = key.outside.length ? `, outside notes: ${key.outside.join(' ')}` : '';
-    $('#key').textContent =
-      `Key: ${key.name} (${key.fit} of ${key.heardCount} notes fit${outside}). ` +
-      `Scale: ${key.scaleNotes.join(' ')}`;
-  } else {
-    $('#key').textContent = 'Key: play a few notes';
+    const outside = key.outside.length ? `, outside the key: ${key.outside.join(' ')}` : '';
+    $('#key').innerHTML =
+      `${key.name} <span class="muted">(${key.fit} of ${key.heardCount} notes fit${outside})</span>` +
+      `<span class="scale">${key.scaleNotes.join('  ')}</span>`;
   }
 
-  $('#held').textContent =
-    `Holding: ${names(s.held)}  |  Sounding: ${names(s.sounding)}` + (s.sustainOn ? '  (pedal)' : '');
-
-  if (e?.note !== undefined) log(`${e.type.padEnd(8)} ${noteName(e.note, flats)}`);
+  keyboard.setState({
+    held: s.held,
+    sounding: s.sounding,
+    velocities: s.velocities,
+    rootPc: chord?.type === 'chord' ? chord.root : null,
+    scalePcs: key?.scalePcs ?? null,
+    preferFlats,
+  });
 });
 
 $('#connect').addEventListener('click', async () => {
+  const button = $('#connect');
   try {
     await initMidi({
       onNoteOn: ({ note, velocity, time }) => appState.noteOn(note, velocity, time),
@@ -84,6 +85,8 @@ $('#connect').addEventListener('click', async () => {
           : 'No MIDI devices found. Check the cable and close other music apps.';
       },
     });
+    button.textContent = 'Connected';
+    button.disabled = true;
   } catch (err) {
     $('#status').textContent = err.message;
     console.error(err);
