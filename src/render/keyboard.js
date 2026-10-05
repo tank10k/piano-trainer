@@ -16,6 +16,10 @@ const DEFAULT_COLORS = {
   held: '#3fc1c9',     // keys under your fingers
   sustained: '#8b7fe0', // keys ringing on the pedal
   scaleDot: '#e8b04b', // notes that belong to the detected key
+  target: '#5fd38d',   // keys a lesson wants you to play
+  miss: '#ef5b5b',     // a wrong note in a lesson
+  ghost: '#e57bb5',    // keys the app is demonstrating
+  fingerBg: '#101218', // finger-number badges
   labelDark: '#101218',
   labelLight: '#f4f1e8',
 };
@@ -48,7 +52,13 @@ export function createKeyboard(canvas, { low = 21, high = 108, colors = {} } = {
 
   const glow = new Map(); // note -> current brightness 0..1 (animated toward a target)
   const pulses = [];      // { note, strength, age } short-lived columns of light
-  let state = { held: [], sounding: [], velocities: new Map(), rootPc: null, scalePcs: null, preferFlats: false };
+  const lastTint = new Map(); // note -> color it was last lit with, so the fade-out matches
+  let state = {
+    held: [], sounding: [], velocities: new Map(), rootPc: null, scalePcs: null, preferFlats: false,
+    targets: null,    // [{ note, state?, finger?, label? }]; state: next | later | done | miss
+    labels: 'sounding', // which keys show note names: sounding | all | c | off
+    ghostNotes: null, // notes the app is demonstrating
+  };
   let layout = null;
   let width = 0;
   let height = 0;
@@ -98,18 +108,87 @@ export function createKeyboard(canvas, { low = 21, high = 108, colors = {} } = {
     ctx.globalCompositeOperation = 'source-over';
   }
 
-  function drawKey(n, held, sounding) {
+  function keyPath(r, shrink = 0) {
+    const inset = (r.black ? 0 : 1) + shrink;
+    ctx.beginPath();
+    ctx.roundRect(r.x + inset, r.y + shrink, r.w - inset * 2, r.h - shrink * 2, [0, 0, 4, 4]);
+  }
+
+  // Lesson targets: a pulsing outline on the next key, a faint one on keys coming up later,
+  // a soft fill on keys already played, and red on a wrong note.
+  function drawTarget(r, t, now) {
+    const kind = t.state ?? 'next';
+    if (kind === 'next') {
+      const beat = reduceMotion ? 1 : 0.65 + 0.35 * Math.sin(now / 220);
+      keyPath(r);
+      ctx.fillStyle = rgba(c.target, 0.25 * beat);
+      ctx.fill();
+      keyPath(r, 1.5);
+      ctx.strokeStyle = rgba(c.target, beat);
+      ctx.lineWidth = 3;
+      ctx.stroke();
+    } else if (kind === 'later') {
+      keyPath(r, 1);
+      ctx.strokeStyle = rgba(c.target, 0.5);
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    } else if (kind === 'done') {
+      keyPath(r);
+      ctx.fillStyle = rgba(c.target, 0.2);
+      ctx.fill();
+    } else if (kind === 'miss') {
+      keyPath(r);
+      ctx.fillStyle = rgba(c.miss, 0.35);
+      ctx.fill();
+      keyPath(r, 1.5);
+      ctx.strokeStyle = c.miss;
+      ctx.lineWidth = 3;
+      ctx.stroke();
+    }
+  }
+
+  function drawFinger(r, finger) {
+    const rad = Math.max(6, Math.min(11, r.w * 0.34));
+    const cx = r.x + r.w / 2;
+    const cy = r.y + r.h * (r.black ? 0.3 : 0.42);
+    ctx.fillStyle = r.black ? c.white : c.fingerBg;
+    ctx.beginPath();
+    ctx.arc(cx, cy, rad, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = r.black ? c.fingerBg : c.white;
+    ctx.font = `700 ${Math.round(rad * 1.25)}px system-ui, sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(String(finger), cx, cy + 0.5);
+    ctx.textBaseline = 'alphabetic';
+  }
+
+  // Which name, if any, to print on a key under the current label setting.
+  function labelFor(n, pc, isSounding, target) {
+    if (target?.label) return target.label;
+    const mode = state.labels ?? 'sounding';
+    const withOctave = pc === 0 && mode !== 'sounding' ? `C${Math.floor(n / 12) - 1}` : null;
+    if (mode === 'all') return withOctave ?? pcName(pc, state.preferFlats);
+    if (mode === 'c') return withOctave ?? (isSounding ? pcName(pc, state.preferFlats) : null);
+    if (mode === 'sounding') return isSounding ? pcName(pc, state.preferFlats) : null;
+    return null; // 'off': for quizzes like "find the G"
+  }
+
+  function drawKey(n, held, sounding, ghost, targets, now) {
     const r = layout.rects.get(n);
     if (!r) return;
     const pc = pitchClass(n);
     const g = glow.get(n) ?? 0;
-    const tint = sounding.has(n) && !held.has(n) ? c.sustained : c.held;
-    const inset = r.black ? 0 : 1;
+    const lit = held.has(n) ? c.held : sounding.has(n) ? c.sustained : ghost.has(n) ? c.ghost : null;
+    if (lit) lastTint.set(n, lit);
+    const tint = lit ?? lastTint.get(n) ?? c.held; // fading keys keep the color they were lit with
+    const target = targets.get(n);
 
     ctx.fillStyle = mix(r.black ? c.black : c.white, tint, g * 0.85);
-    ctx.beginPath();
-    ctx.roundRect(r.x + inset, r.y, r.w - inset * 2, r.h, [0, 0, 4, 4]);
+    keyPath(r);
     ctx.fill();
+
+    if (target) drawTarget(r, target, now);
 
     // Scale dot: shows which keys belong to the detected key.
     if (state.scalePcs?.includes(pc)) {
@@ -119,14 +198,20 @@ export function createKeyboard(canvas, { low = 21, high = 108, colors = {} } = {
       ctx.fill();
     }
 
-    // Note name on sounding keys; the chord root is drawn larger and bold.
-    if (sounding.has(n)) {
-      const isRoot = pc === state.rootPc;
+    if (target?.finger) drawFinger(r, target.finger);
+
+    // Note names; the chord root is drawn larger and bold, unplayed keys are dimmer.
+    const isSounding = sounding.has(n);
+    const text = labelFor(n, pc, isSounding, target);
+    if (text) {
+      const isRoot = isSounding && pc === state.rootPc;
       const size = Math.min(15, r.w * (isRoot ? 0.55 : 0.42));
       ctx.font = `${isRoot ? 700 : 500} ${size}px system-ui, sans-serif`;
       ctx.textAlign = 'center';
+      ctx.globalAlpha = isSounding || target ? 1 : 0.55;
       ctx.fillStyle = r.black && g < 0.5 ? c.labelLight : c.labelDark;
-      ctx.fillText(pcName(pc, state.preferFlats), r.x + r.w / 2, r.y + r.h - r.w * 0.8);
+      ctx.fillText(text, r.x + r.w / 2, r.y + r.h - r.w * 0.8);
+      ctx.globalAlpha = 1;
     }
   }
 
@@ -136,11 +221,15 @@ export function createKeyboard(canvas, { low = 21, high = 108, colors = {} } = {
     last = now;
     const held = new Set(state.held);
     const sounding = new Set(state.sounding);
+    const ghost = new Set(state.ghostNotes ?? []);
+    const targets = new Map(
+      (state.targets ?? []).map((t) => (typeof t === 'number' ? [t, { note: t }] : [t.note, t])),
+    );
 
     // Ease each key's glow toward its target: rise fast, fade slowly.
     for (const n of notes) {
       const vel = state.velocities.get(n) ?? 100;
-      const target = held.has(n) ? 0.55 + 0.45 * (vel / 127) : sounding.has(n) ? 0.45 : 0;
+      const target = held.has(n) ? 0.55 + 0.45 * (vel / 127) : sounding.has(n) ? 0.45 : ghost.has(n) ? 0.6 : 0;
       const cur = glow.get(n) ?? 0;
       const rate = target > cur ? 30 : 5;
       glow.set(n, cur + (target - cur) * Math.min(1, rate * dt));
@@ -153,8 +242,8 @@ export function createKeyboard(canvas, { low = 21, high = 108, colors = {} } = {
       drawPulses();
       ctx.fillStyle = c.gap;
       ctx.fillRect(0, layout.keyTop, width, height - layout.keyTop);
-      whites.forEach((n) => drawKey(n, held, sounding));
-      blacks.forEach((n) => drawKey(n, held, sounding));
+      whites.forEach((n) => drawKey(n, held, sounding, ghost, targets, now));
+      blacks.forEach((n) => drawKey(n, held, sounding, ghost, targets, now));
       ctx.fillStyle = c.felt;
       ctx.fillRect(0, layout.keyTop, width, 4);
     }
@@ -162,7 +251,8 @@ export function createKeyboard(canvas, { low = 21, high = 108, colors = {} } = {
   });
 
   return {
-    /** Merge in any of: held, sounding, velocities, rootPc, scalePcs, preferFlats. */
+    /** Merge in any of: held, sounding, velocities, rootPc, scalePcs, preferFlats,
+     *  targets, labels, ghostNotes. */
     setState(next) {
       state = { ...state, ...next };
     },

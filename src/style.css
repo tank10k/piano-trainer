@@ -79,3 +79,7 @@ button.secondary:disabled { background: transparent; }
 .mode-picker select { font: inherit; padding: 0.25rem 0.5rem; }
 
 .input-hint { font-size: 0.85rem; opacity: 0.7; margin: 0.5rem 0 0; }
+
+/* Buttons and options inside a mode's panel */
+.guide-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; margin-top: 0.75rem; }
+.guide-controls select { font: inherit; padding: 0.25rem 0.5rem; }

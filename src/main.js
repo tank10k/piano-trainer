@@ -9,6 +9,7 @@ import { createKeyboard } from './render/keyboard.js';
 import { createAudioEngine } from './audio/audioEngine.js';
 import { createModeManager } from './modes/modeManager.js';
 import { createFreePlayMode } from './modes/freePlay.js';
+import { createGuideTestMode } from './modes/guideTest.js';
 import { createComputerKeys } from './input/computerKeys.js';
 import { createPointerInput } from './input/pointerInput.js';
 
@@ -57,11 +58,15 @@ const modes = createModeManager({
       rootPc: null,
       scalePcs: null,
       preferFlats: false,
+      targets: null,
+      labels: 'sounding',
+      ghostNotes: null,
       ...view,
     }),
-  services: { audio },
+  services: { audio, startAudio: () => ensureAudio() },
 });
 modes.register(createFreePlayMode());
+if (import.meta.env.DEV) modes.register(createGuideTestMode()); // only offered while running npm run dev
 
 const modeSelect = $('#mode');
 modeSelect.innerHTML = modes
