@@ -9,6 +9,8 @@ import { createKeyboard } from './render/keyboard.js';
 import { createAudioEngine } from './audio/audioEngine.js';
 import { createModeManager } from './modes/modeManager.js';
 import { createFreePlayMode } from './modes/freePlay.js';
+import { createComputerKeys } from './input/computerKeys.js';
+import { createPointerInput } from './input/pointerInput.js';
 
 document.querySelector('#app').innerHTML = `
   <header class="topbar">
@@ -21,6 +23,7 @@ document.querySelector('#app').innerHTML = `
   <main class="stage">
     <section id="mode-panel" class="readout" aria-live="polite"></section>
     <canvas id="keyboard" aria-label="Keyboard showing the notes you play"></canvas>
+    <p id="input-hint" class="input-hint"></p>
   </main>
 `;
 
@@ -90,16 +93,50 @@ appState.subscribe((s) => {
   modes.handleState(s);
 });
 
+// Browsers only allow audio to start inside a user gesture (a click or key press),
+// so it starts on the Connect click or the first note from the computer keys or mouse.
+let audioStarted = false;
+function ensureAudio() {
+  if (audioStarted) return;
+  audioStarted = true;
+  audio.start();
+}
+
+// Every input source (MIDI, computer keys, mouse/touch) sends the same events here.
+const inputHandlers = {
+  onNoteOn: ({ note, velocity, time }) => appState.noteOn(note, velocity, time),
+  onNoteOff: ({ note, time }) => appState.noteOff(note, time),
+  onControlChange: ({ controller, value, time }) => {
+    if (controller === 64) appState.setSustain(value >= 64, time); // sustain pedal
+  },
+};
+const withAudio = (fn) => (e) => {
+  ensureAudio(); // runs inside the key or pointer event, so the browser allows it
+  fn(e);
+};
+
+createComputerKeys({
+  onNoteOn: withAudio(inputHandlers.onNoteOn),
+  onNoteOff: inputHandlers.onNoteOff,
+  onControlChange: withAudio(inputHandlers.onControlChange),
+  onOctaveChange: (base) => {
+    $('#input-hint').textContent =
+      `No controller? Play with A–; (black keys on W E T Y U O P). ` +
+      `Z/X change octave (A is C${base / 12 - 1}), Space is the sustain pedal, Shift plays louder. ` +
+      `You can also click or tap the keys.`;
+  },
+});
+createPointerInput($('#keyboard'), keyboard.noteAt, {
+  onNoteOn: withAudio(inputHandlers.onNoteOn),
+  onNoteOff: inputHandlers.onNoteOff,
+});
+
 $('#connect').addEventListener('click', async () => {
   const button = $('#connect');
-  audio.start(); // start audio inside the click, before any await, so the browser allows it
+  ensureAudio(); // start audio inside the click, before any await, so the browser allows it
   try {
     await initMidi({
-      onNoteOn: ({ note, velocity, time }) => appState.noteOn(note, velocity, time),
-      onNoteOff: ({ note, time }) => appState.noteOff(note, time),
-      onControlChange: ({ controller, value, time }) => {
-        if (controller === 64) appState.setSustain(value >= 64, time); // sustain pedal
-      },
+      ...inputHandlers,
       onDevicesChanged: (names) => {
         if (!names.length) appState.reset();
         $('#status').textContent = names.length

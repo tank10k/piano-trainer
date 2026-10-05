@@ -166,6 +166,14 @@ export function createKeyboard(canvas, { low = 21, high = 108, colors = {} } = {
     setState(next) {
       state = { ...state, ...next };
     },
+    /** The MIDI note under a point in canvas CSS pixels, or null. Black keys win (they sit on top). */
+    noteAt(x, y) {
+      if (!layout) return null;
+      const inside = (r) => r && x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
+      for (const n of blacks) if (inside(layout.rects.get(n))) return n;
+      for (const n of whites) if (inside(layout.rects.get(n))) return n;
+      return null;
+    },
     /** Fire a column of light above a key (call on note-on). */
     pulse(note, velocity = 100) {
       if (!reduceMotion) pulses.push({ note, strength: velocity / 127, age: 0 });
